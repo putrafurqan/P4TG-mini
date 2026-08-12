@@ -22,27 +22,58 @@ $SDE/run_bfshell.sh -b ~/exp/P4TG-mini/start.py
 $SDE/run_bfshell.sh -b ~/exp/P4TG-mini/stop.py
 ```
 
-## Throughput Configuration
+## Frame sizes and throughput
 
-At `config.py`:
+At `config.py`. One entry per frame size, each with its own rate:
 
 ```python
-TIMER_NANOSECONDS = 6152
-PACKETS_PER_TIMER = 5
+STREAMS = [
+    {"size": 64,   "pps": 100_000},
+    {"size": 128,  "pps": 100_000},
+    {"size": 256,  "pps": 100_000},
+    {"size": 512,  "pps": 300_000},
+    {"size": 1024, "pps": 300_000},
+    {"size": 1280, "pps":  50_000},
+    {"size": 1518, "pps":  50_000},
+]
 ```
 
+`size` is the size on the cable in bytes, including the 4-byte error check.
+`pps` is packets per second for that size.
+
+The share each size gets is its `pps` divided by the total. The list above is
+10% / 10% / 10% / 30% / 30% / 5% / 5%. To send a single size, use a list of one
+entry.
+
 ```
-speed in Gbit/s  =  PACKETS_PER_TIMER * (FRAME_SIZE + 20) * 8  /  TIMER_NANOSECONDS
+speed in Gbit/s  =  pps * (size + 20) * 8 / 1000000000
 ```
 
-Examples (1518 Bytes):
+`start.py` turns each `pps` into the burst size and timer the hardware wants,
+then prints what it set up, including the achieved rate and the real share of
+each size. Run `python rate.py` on its own to see that table without touching
+the switch.
 
-| Timer | Packets per timer | Speed |
-|---|---|---|
-| 12304 | 1 | 1 Gbit/s |
-| 6152 | 5 | 10 Gbit/s |
-| 6152 | 25 | 50 Gbit/s |
-| 3076 | 25 | 100 Gbit/s |
+### Limits
+
+- **16 frame sizes at most.** The generator has 8 slots per pipe and there are
+  2 pipes. Slots are filled on pipe 0 first, then pipe 1.
+- **100 Gbit/s per pipe.** So the first 8 sizes share 100 Gbit/s, and sizes 9
+  to 16 share another 100 Gbit/s.
+- **16 KB of packet memory per pipe**, enough for 8 full-size frames.
+- Smallest frame is 46 bytes, the size of the headers plus the error check.
+
+`start.py` stops with an explanation rather than sending less traffic than
+asked if any of these is exceeded.
+
+### Checking what was really sent
+
+Each slot counts its own packets. After a run, compare the counters to confirm
+the mix came out as configured:
+
+```
+bfrt.tf1.pktgen.app_cfg.get(pipe=0, app_id=0)
+```
 
 ## Changing the packet
 

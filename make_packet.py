@@ -30,7 +30,16 @@ def calculate_checksum(header):
     return checksum
 
 
-def make_packet():
+def make_packet(frame_size):
+
+    space_for_headers = ETHERNET_HEADER_SIZE + IP_HEADER_SIZE + UDP_HEADER_SIZE
+    smallest_frame = space_for_headers + ERROR_CHECK_SIZE
+
+    if frame_size < smallest_frame:
+        raise ValueError(
+            f"Frame size {frame_size} is too small. The headers and the error "
+            f"check already take {smallest_frame} bytes."
+        )
 
     packet = []
 
@@ -44,8 +53,7 @@ def make_packet():
     packet.append(0x08)
     packet.append(0x00)
 
-    space_for_headers = ETHERNET_HEADER_SIZE + IP_HEADER_SIZE + UDP_HEADER_SIZE
-    data_size = config.FRAME_SIZE - ERROR_CHECK_SIZE - space_for_headers
+    data_size = frame_size - ERROR_CHECK_SIZE - space_for_headers
 
     ip_header = []
 
@@ -111,10 +119,13 @@ def make_packet():
     # DATA
     # Padded with zeros until the requested size is reached.
 
-    while len(packet) < config.FRAME_SIZE - ERROR_CHECK_SIZE:
+    while len(packet) < frame_size - ERROR_CHECK_SIZE:
         packet.append(0)
 
     return packet
 
 if __name__ == "__main__":
-    test_packet = make_packet()
+    for stream in config.STREAMS:
+        size = stream["size"]
+        test_packet = make_packet(size)
+        print(f"Frame {size} bytes on the cable -> {len(test_packet)} bytes in memory")

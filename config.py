@@ -16,23 +16,40 @@ PORTS = [
     {"dev_port": 4,   "mac": [0x10, 0x41, 0x6d, 0x18, 0x66, 0xf3], "ip": [192, 168, 1, 18]},  # 18/0 -> eth8
 ]
 
-# GENERATOR SLOT (0-7)
-GENERATOR_NUMBER = 0
-# Position of the packet in the generator's memory.
-MEMORY_POSITION = 0
+# TRAFFIC MIX CONFIGURATION
+#
+# One entry = one frame size = one packet generator slot.
+# The generator cannot change the size of a packet inside a single slot: each
+# slot replays one fixed template. A mix of sizes is made by running several
+# slots at once, each holding a different size.
+#
+# "size" is the size on the cable in bytes, including the 4-byte error check.
+# "pps" is how many packets per second that size should be sent at.
+#
+# The share each size gets is simply its pps divided by the total pps. The
+# example below is 10% / 10% / 10% / 30% / 30% / 5% / 5%.
+#
+# At most 16 entries: 8 generator slots per pipe, and there are 2 pipes.
+STREAMS = [
+    {"size": 64,   "pps": 100_000},
+    {"size": 128,  "pps": 100_000},
+    {"size": 256,  "pps": 100_000},
+    {"size": 512,  "pps": 300_000},
+    {"size": 1024, "pps": 300_000},
+    {"size": 1280, "pps":  50_000},
+    {"size": 1518, "pps":  50_000},
+]
 
 
-# THROUGHPUT CONFIGURATION
-# Interval between bursts, in nanoseconds.
-TIMER_NANOSECONDS = 6152
-# Packets produced each interval. One gives the smoothest traffic.
-PACKETS_PER_TIMER = 5
-
-
-# PACKET
-
-# FRAME SIZE IN CABLE: Size on the cable, include 4-bytes error check
-FRAME_SIZE = 1518 # Bytes
+# HARDWARE LIMITS
+# Generator slots available in one pipe.
+MAX_SLOTS_PER_PIPE = 8
+# Speed one pipe's generator can produce, in Gbit/s.
+PIPE_MAX_GBPS = 100
+# Packet memory in one pipe: 1024 rows of 16 bytes.
+PKT_BUFFER_BYTES_PER_PIPE = 16384
+# Every packet must start on a 16-byte boundary in that memory.
+PKT_BUFFER_ALIGNMENT = 16
 
 
 SOURCE_MAC = [0x02, 0x00, 0x00, 0x00, 0x00, 0x01]
