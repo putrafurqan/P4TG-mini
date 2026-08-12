@@ -5,6 +5,11 @@ this_folder = os.path.dirname(os.path.abspath(__file__))
 if this_folder not in sys.path:
     sys.path.append(this_folder)
 
+# See the note in start.py: bfshell reuses one Python process across runs,
+# so drop any cached copy of config before reading it.
+if "config" in sys.modules:
+    del sys.modules["config"]
+
 import config
 
 # Every slot on every pipe is switched off, not only the ones the current

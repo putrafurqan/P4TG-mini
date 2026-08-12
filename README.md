@@ -75,6 +75,22 @@ the mix came out as configured:
 bfrt.tf1.pktgen.app_cfg.get(pipe=0, app_id=0)
 ```
 
+That counts packets leaving the generator. `monitor.py` instead reads what
+each of the 6 output ports actually received, straight from the dataplane:
+packets of each configured size and measured throughput, per port. It is a
+trustworthy replacement for `check_rx.py` at high rates, since it counts on
+the ASIC instead of in a userspace socket, so it never drops packets under
+load.
+
+```bash
+$SDE/run_bfshell.sh -b ~/exp/P4TG-mini/monitor.py
+```
+
+Edit `SECONDS` at the top of `monitor.py` to change how long it measures for.
+Registers are zeroed automatically at the start of every `start.py` run; set
+`RESET_ONLY = True` in `monitor.py` to zero them again mid-run without
+restarting traffic.
+
 ## Changing the packet
 
 At `config.py`:

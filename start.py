@@ -5,6 +5,15 @@ this_folder = os.path.dirname(os.path.abspath(__file__))
 if this_folder not in sys.path:
     sys.path.append(this_folder)
 
+# bfshell keeps one Python process alive across every `bfrt_python <file>`
+# run in a session, so a plain `import` only reads these files from disk the
+# first time. Later runs would silently keep using whatever was loaded
+# before, even after the files changed -- drop any cached copies first so
+# each run reflects what is on disk right now.
+for module_name in ("config", "make_packet", "rate"):
+    if module_name in sys.modules:
+        del sys.modules[module_name]
+
 import config
 import make_packet
 import rate
@@ -26,6 +35,16 @@ def round_up(value, step):
     if remainder == 0:
         return value
     return value + step - remainder
+
+
+# Step 0: zero out the monitoring registers, so this run's stats don't
+# start out mixed in with whatever a previous run left behind.
+for register in (
+    bfrt.p4tg_mini.pipe.MyEgress.port_pkt_count,
+    bfrt.p4tg_mini.pipe.MyEgress.port_byte_count,
+    bfrt.p4tg_mini.pipe.MyEgress.size_histogram,
+):
+    register.clear()
 
 
 # Step 1: work out which generator slot each frame size will use
@@ -244,7 +263,7 @@ for generator_port in config.GENERATOR_PORTS:
     )
 
 # Step 8: Populate entry for packet destination at `rewrite_per_port` table
-for port in config.PORTS:
+for idx, port in enumerate(config.PORTS):
     try:
         bfrt.p4tg_mini.pipe.MyEgress.rewrite_per_port.delete(
             egress_port=port["dev_port"],
@@ -256,6 +275,28 @@ for port in config.PORTS:
         egress_port=port["dev_port"],
         new_mac=bytes_to_number(port["mac"]),
         new_ip=bytes_to_number(port["ip"]),
+        port_idx=idx,
+    )
+
+# Step 8b: Populate `classify_size` so the dataplane can tell which
+# configured stream a packet belongs to. `eg_intr_md.pkt_length` does not
+# include the 4-byte FCS that config.py's "size" does, so the key is
+# size - 4.
+seen_sizes = {}
+for stream in config.STREAMS:
+    seen_sizes.setdefault(stream["size"], len(seen_sizes))
+
+for size, bucket in seen_sizes.items():
+    try:
+        bfrt.p4tg_mini.pipe.MyEgress.classify_size.delete(
+            pkt_length=size - 4,
+        )
+    except:
+        pass
+
+    bfrt.p4tg_mini.pipe.MyEgress.classify_size.add_with_set_bucket(
+        pkt_length=size - 4,
+        bucket_idx=bucket,
     )
 
 

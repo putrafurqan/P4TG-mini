@@ -121,6 +121,8 @@ struct my_egress_headers {
 }
 
 struct my_egress_metadata {
+    bit<3> port_idx;    // compact 0-5 index for the 6 output ports
+    bit<4> bucket_idx;  // which configured frame size this packet matches
 }
 
 
@@ -161,9 +163,10 @@ control MyEgress(
     inout egress_intrinsic_metadata_for_deparser_t eg_dprsr_md,
     inout egress_intrinsic_metadata_for_output_port_t eg_oport_md
 ) {
-    action rewrite_addresses(mac_address new_mac, ipv4_address new_ip) {
+    action rewrite_addresses(mac_address new_mac, ipv4_address new_ip, bit<3> port_idx) {
         headers.ethernet.dst_addr = new_mac;
         headers.ipv4.dst_addr = new_ip;
+        metadata.port_idx = port_idx;
     }
 
     table rewrite_per_port {
@@ -179,9 +182,57 @@ control MyEgress(
         size = 16;
     }
 
+    // Classifies this copy's wire length against the actual configured
+    // frame sizes (at most 16, per the generator's slot limit), so the
+    // per-port histogram below can be indexed by which stream a packet
+    // belongs to rather than by an arbitrary byte range.
+    action set_bucket(bit<4> bucket_idx) {
+        metadata.bucket_idx = bucket_idx;
+    }
+
+    table classify_size {
+        key = {
+            eg_intr_md.pkt_length: exact;
+        }
+        actions = {
+            set_bucket;
+            NoAction;
+        }
+        const default_action = NoAction();  // unmatched length -> bucket 0
+
+        size = 16;
+    }
+
+    // Per-port packet/byte counters (throughput).
+    Register<bit<32>, bit<3>>(6) port_pkt_count;
+    Register<bit<64>, bit<3>>(6) port_byte_count;
+    // Per-port, per-size histogram, flattened: index = port_idx * 16 + bucket_idx.
+    Register<bit<32>, bit<7>>(96) size_histogram;
+
+    RegisterAction<bit<32>, bit<3>, bit<32>>(port_pkt_count) incr_port_pkt = {
+        void apply(inout bit<32> value) {
+            value = value + 1;
+        }
+    };
+    RegisterAction<bit<64>, bit<3>, bit<64>>(port_byte_count) add_port_bytes = {
+        void apply(inout bit<64> value) {
+            value = value + (bit<64>) eg_intr_md.pkt_length;
+        }
+    };
+    RegisterAction<bit<32>, bit<7>, bit<32>>(size_histogram) incr_size_bucket = {
+        void apply(inout bit<32> value) {
+            value = value + 1;
+        }
+    };
+
     apply {
         if (headers.ipv4.isValid()) {
             rewrite_per_port.apply();
+            classify_size.apply();
+
+            incr_port_pkt.execute(metadata.port_idx);
+            add_port_bytes.execute(metadata.port_idx);
+            incr_size_bucket.execute(metadata.port_idx ++ metadata.bucket_idx);
         }
     }
 }
