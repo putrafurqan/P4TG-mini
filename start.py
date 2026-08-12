@@ -42,37 +42,73 @@ if len(config.STREAMS) > slots_available:
         f"({config.MAX_SLOTS_PER_PIPE} per pipe, {len(config.GENERATOR_PORTS)} pipes)."
     )
 
-# Slots are handed out in order: the first pipe is filled up before the second
-# pipe is touched at all.
-streams = []
-next_free_byte = [0] * len(config.GENERATOR_PORTS)
-
-for position, wanted in enumerate(config.STREAMS):
-
-    pipe = position // config.MAX_SLOTS_PER_PIPE
-    slot = position % config.MAX_SLOTS_PER_PIPE
-
+# Build the packet and solve the rate for every requested size first, so the
+# pipe each one lands on can be chosen by how much throughput it actually
+# needs, rather than by its position in the list.
+prepared = []
+for wanted in config.STREAMS:
     packet = make_packet.make_packet(wanted["size"])
-
-    # Each packet has to start on a 16-byte boundary in the pipe's memory.
-    offset = next_free_byte[pipe]
-    next_free_byte[pipe] = round_up(offset + len(packet), config.PKT_BUFFER_ALIGNMENT)
-
     batch, timer, achieved = rate.solve_rate(wanted["pps"])
-
-    streams.append({
+    prepared.append({
         "size": wanted["size"],
         "wanted_pps": wanted["pps"],
-        "pipe": pipe,
-        "slot": slot,
-        "generator_port": config.GENERATOR_PORTS[pipe],
         "packet": packet,
-        "offset": offset,
         "batch": batch,
         "timer": timer,
         "achieved_pps": achieved,
         "gbps": rate.gigabits_per_second(achieved, wanted["size"]),
     })
+
+# Spread the streams across the pipes only as much as needed: the heaviest
+# streams are placed first, and each goes into the first pipe (pipe 0 before
+# pipe 1) that still has a free slot and enough Gbit/s headroom left. A mix
+# that fits on pipe 0 alone stays there; pipe 1 is only touched once pipe 0
+# is full. This is only about fitting under each pipe's 100 Gbit/s ceiling
+# -- it has no effect on the sizes or the proportions between them, and
+# every port still receives the combined mix from both pipes.
+pipe_count = len(config.GENERATOR_PORTS)
+pipe_load_gbps = [0.0] * pipe_count
+pipe_slot_count = [0] * pipe_count
+next_free_byte = [0] * pipe_count
+
+heaviest_first = sorted(range(len(prepared)), key=lambda i: prepared[i]["gbps"], reverse=True)
+
+streams = [None] * len(prepared)
+
+for i in heaviest_first:
+    stream = prepared[i]
+
+    pipe = None
+    for candidate in range(pipe_count):
+        has_slot = pipe_slot_count[candidate] < config.MAX_SLOTS_PER_PIPE
+        has_speed = pipe_load_gbps[candidate] + stream["gbps"] <= config.PIPE_MAX_GBPS
+        if has_slot and has_speed:
+            pipe = candidate
+            break
+
+    if pipe is None:
+        # Nothing fits within one pipe's limits on its own. Fall back to
+        # whichever pipe has a free slot and the least load, so the budget
+        # check below reports a clear over-limit error instead of failing
+        # here without one.
+        open_pipes = [p for p in range(pipe_count) if pipe_slot_count[p] < config.MAX_SLOTS_PER_PIPE]
+        pipe = min(open_pipes, key=lambda p: pipe_load_gbps[p])
+
+    slot = pipe_slot_count[pipe]
+    pipe_slot_count[pipe] = slot + 1
+    pipe_load_gbps[pipe] = pipe_load_gbps[pipe] + stream["gbps"]
+
+    # Each packet has to start on a 16-byte boundary in the pipe's memory.
+    offset = next_free_byte[pipe]
+    next_free_byte[pipe] = round_up(offset + len(stream["packet"]), config.PKT_BUFFER_ALIGNMENT)
+
+    streams[i] = {
+        **stream,
+        "pipe": pipe,
+        "slot": slot,
+        "generator_port": config.GENERATOR_PORTS[pipe],
+        "offset": offset,
+    }
 
 
 # Step 2: refuse to start if a pipe has been asked for more than it can give

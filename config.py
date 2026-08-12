@@ -31,13 +31,13 @@ PORTS = [
 #
 # At most 16 entries: 8 generator slots per pipe, and there are 2 pipes.
 STREAMS = [
-    {"size": 64,   "pps": 100_000},
-    {"size": 128,  "pps": 100_000},
-    {"size": 256,  "pps": 100_000},
-    {"size": 512,  "pps": 300_000},
-    {"size": 1024, "pps": 300_000},
-    {"size": 1280, "pps":  50_000},
-    {"size": 1518, "pps":  50_000},
+    {"size": 64,   "pps": 10_000_000},
+    {"size": 128,  "pps": 10_000_000},
+    {"size": 256,  "pps": 10_000_000},
+    {"size": 512,  "pps":  1_000_000},
+    {"size": 1024, "pps":  3_000_000},
+    {"size": 1280, "pps":  5_000_000},
+    {"size": 1518, "pps":  5_000_000},
 ]
 
 
