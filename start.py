@@ -24,9 +24,12 @@ bits_per_packet = (config.FRAME_SIZE + 20) * 8
 
 # One Gbit/s is one bit per nanosecond.
 speed = config.PACKETS_PER_TIMER * bits_per_packet / config.TIMER_NANOSECONDS
-
 packets_per_second = config.PACKETS_PER_TIMER / config.TIMER_NANOSECONDS * 1000000000
 millions_of_packets = packets_per_second / 1000000
+
+print(f"Speed: {speed} Gbit/s")
+print(f"Packets per second: {packets_per_second}")
+print(f"Millions of packets per second: {millions_of_packets}")
 
 # Step 3: enable both packet generator 
 for generator_port in config.GENERATOR_PORTS:
@@ -108,7 +111,6 @@ bfrt.tf1.pktgen.app_cfg.mod_with_trigger_timer_periodic(
     timer_nanosec=config.TIMER_NANOSECONDS,
     packets_per_batch_cfg=config.PACKETS_PER_TIMER - 1,
     batch_count_cfg=0,
-    # Pipe local, so it is the same number in both pipes: 68.
     pipe_local_source_port=config.GENERATOR_PORTS[0],
     pkt_buffer_offset=config.MEMORY_POSITION,
 )
