@@ -1,1 +1,4 @@
 .env
+*.pcap
+*.md
+__pycache__/
