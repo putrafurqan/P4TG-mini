@@ -1,27 +1,28 @@
-# Reads the dataplane's own packet/byte counters and prints a per-port frame
-# size histogram plus measured throughput -- ground truth from the switch
-# ASIC, not a lossy userspace capture like check_rx.py.
+# Reads the dataplane's own packet and byte counters and prints, for each of
+# the 6 output ports, how many packets of each frame size it sent and what
+# throughput that works out to.
 #
-# Run this the same way as start.py/stop.py, via bfshell:
+# This is counted on the switch itself, so unlike check_rx.py it does not
+# lose packets under load and stays accurate at full rate.
+#
+# Run it the same way as start.py and stop.py, while traffic is running:
 #
 #     $SDE/run_bfshell.sh -b monitor.py
 #
-# Optional: edit SECONDS below to change how long the two snapshots are
-# spaced apart, or set RESET_ONLY = True to just zero the registers (the
-# same thing start.py's Step 0 does) without taking a measurement.
+# SECONDS below is how far apart the two readings are taken. Set RESET_ONLY
+# to True to just zero the counter instead, which start.py already does at
+# the beginning of every run.
 
+import os
+import sys
 import time
 
-this_folder = None
-try:
-    import os
-    import sys
-    this_folder = os.path.dirname(os.path.abspath(__file__))
-    if this_folder not in sys.path:
-        sys.path.append(this_folder)
-except NameError:
-    pass
+this_folder = os.path.dirname(os.path.abspath(__file__))
+if this_folder not in sys.path:
+    sys.path.append(this_folder)
 
+# Same reason as in start.py: bfshell keeps one Python process alive across
+# runs, so drop any cached copy of config first.
 for module_name in ("config",):
     if module_name in sys.modules:
         del sys.modules[module_name]
@@ -32,112 +33,117 @@ import config
 SECONDS = 5.0
 RESET_ONLY = False
 
-NUM_BUCKETS = 16  # must match `bit<4> bucket_idx` / the classify_size table size in p4tg_mini.p4
+# Must match BUCKETS_PER_PORT and UNCLASSIFIED_BUCKET in p4/p4tg_mini.p4.
+BUCKETS_PER_PORT = 32
+UNCLASSIFIED_BUCKET = 31
 
-port_names = [f"port {port['dev_port']}" for port in config.PORTS]
+STATS = bfrt.p4tg_mini.pipe.MyEgress.port_size_stats
 
-# bucket_idx -> configured frame size, same numbering start.py used when it
-# populated classify_size (order of first appearance in config.STREAMS).
+# bucket_idx -> frame size, numbered the same way start.py numbered them when
+# it filled in the classify_size table: order of first appearance in STREAMS.
 bucket_size = {}
 for stream in config.STREAMS:
     if stream["size"] not in bucket_size.values():
         bucket_size[len(bucket_size)] = stream["size"]
 
 
-def clear_registers():
-    for register in (
-        bfrt.p4tg_mini.pipe.MyEgress.port_pkt_count,
-        bfrt.p4tg_mini.pipe.MyEgress.port_byte_count,
-        bfrt.p4tg_mini.pipe.MyEgress.size_histogram,
-    ):
-        register.clear()
+def read_counter():
+    """Every index of the counter, as {index: (packets, bytes)}."""
 
+    readings = {}
 
-def read_register(register, size, field):
-    """Reads every index of a register array from the ASIC into a plain list.
-
-    `field` is the data field name bfrt exposes for this register's value
-    (visible via `register.info()` on the box if this needs adjusting --
-    it is usually the P4 register's variable name, e.g. "port_pkt_count.f1").
-    """
-    values = [0] * size
-    entries = register.dump(from_hw=True, return_ents=True)
+    entries = STATS.dump(from_hw=True, return_ents=True)
     for entry in entries:
-        index = entry.key[b'$REGISTER_INDEX']
-        raw = entry.data[field]
-        # Tofino registers are per-pipeline-stage; bfrt returns one value per
-        # stage as a list and they should all agree once traffic has settled.
-        values[index] = raw[0] if isinstance(raw, list) else raw
-    return values
+        key = entry.key[b'$COUNTER_INDEX']
+        packets = entry.data[b'$COUNTER_SPEC_PKTS']
+        byte_count = entry.data[b'$COUNTER_SPEC_BYTES']
+        readings[key] = (packets, byte_count)
 
-
-def snapshot():
-    pkt_count = read_register(
-        bfrt.p4tg_mini.pipe.MyEgress.port_pkt_count, len(config.PORTS),
-        b'MyEgress.port_pkt_count.f1',
-    )
-    byte_count = read_register(
-        bfrt.p4tg_mini.pipe.MyEgress.port_byte_count, len(config.PORTS),
-        b'MyEgress.port_byte_count.f1',
-    )
-    histogram = read_register(
-        bfrt.p4tg_mini.pipe.MyEgress.size_histogram, len(config.PORTS) * NUM_BUCKETS,
-        b'MyEgress.size_histogram.f1',
-    )
-    return pkt_count, byte_count, histogram
+    return readings
 
 
 def main():
+
     if RESET_ONLY:
-        clear_registers()
-        print("Monitoring registers cleared.")
+        STATS.clear()
+        print("Monitoring counter cleared.")
         return
 
     print(f"Measuring for {SECONDS:g} seconds...")
 
-    pkt_before, byte_before, hist_before = snapshot()
+    before = read_counter()
     started = time.time()
     time.sleep(SECONDS)
-    pkt_after, byte_after, hist_after = snapshot()
+    after = read_counter()
     elapsed = time.time() - started
 
-    print()
-    print(f"{'port':>10}  {'pps':>12}  {'Gbit/s':>8}  {'packets':>12}")
-
-    for idx, name in enumerate(port_names):
-        pkt_delta = pkt_after[idx] - pkt_before[idx]
-        byte_delta = byte_after[idx] - byte_before[idx]
-
-        pps = pkt_delta / elapsed
-        gbps = byte_delta * 8 / elapsed / 1_000_000_000
-
-        print(f"{name:>10}  {pps:>12,.0f}  {gbps:>8.3f}  {pkt_delta:>12,}")
+    # What changed between the two readings, per (port, size) bucket.
+    def change(index):
+        old_packets, old_bytes = before.get(index, (0, 0))
+        new_packets, new_bytes = after.get(index, (0, 0))
+        return new_packets - old_packets, new_bytes - old_bytes
 
     print()
-    print(f"{'port':>10}  {'size':>6}  {'packets':>12}")
-    for idx, name in enumerate(port_names):
-        base = idx * NUM_BUCKETS
-        histogram_total = 0
-        for bucket, size in sorted(bucket_size.items()):
-            count = hist_after[base + bucket] - hist_before[base + bucket]
-            histogram_total = histogram_total + count
-            if count > 0:
-                print(f"{name:>10}  {size:>6}  {count:>12,}")
+    print(f"{'port':>10}  {'pps':>13}  {'Gbit/s':>8}  {'packets':>13}")
 
-        unclassified_bucket = max(bucket_size.keys(), default=-1) + 1
+    port_totals = []
+
+    for port_index, port in enumerate(config.PORTS):
+        base = port_index * BUCKETS_PER_PORT
+
+        total_packets = 0
+        total_bytes = 0
+        per_size = []
         unclassified = 0
-        for bucket in range(unclassified_bucket, NUM_BUCKETS):
-            unclassified = unclassified + (hist_after[base + bucket] - hist_before[base + bucket])
-        if unclassified > 0:
-            print(f"{name:>10}  {'?':>6}  {unclassified:>12,}  <- classify_size has no entry for this length")
-            histogram_total = histogram_total + unclassified
 
-        pkt_delta = pkt_after[idx] - pkt_before[idx]
-        if histogram_total != pkt_delta:
+        for bucket in range(BUCKETS_PER_PORT):
+            packets, byte_count = change(base + bucket)
+            if packets == 0:
+                continue
+
+            total_packets = total_packets + packets
+            total_bytes = total_bytes + byte_count
+
+            if bucket in bucket_size:
+                per_size.append((bucket_size[bucket], packets))
+            else:
+                unclassified = unclassified + packets
+
+        port_totals.append((port, total_packets, per_size, unclassified))
+
+        packets_per_second = total_packets / elapsed
+        gigabits = total_bytes * 8 / elapsed / 1000000000
+
+        print(
+            f"{port['dev_port']:>10}  {packets_per_second:>13,.0f}  "
+            f"{gigabits:>8.3f}  {total_packets:>13,}"
+        )
+
+    print()
+    print(f"{'port':>10}  {'size':>6}  {'packets':>13}  {'share':>7}")
+
+    for port, total_packets, per_size, unclassified in port_totals:
+        if total_packets == 0:
+            print(f"{port['dev_port']:>10}  nothing arrived")
+            continue
+
+        for size, packets in sorted(per_size):
+            share = packets / total_packets * 100
+            print(f"{port['dev_port']:>10}  {size:>6}  {packets:>13,}  {share:>6.2f}%")
+
+        if unclassified > 0:
+            share = unclassified / total_packets * 100
             print(
-                f"{name:>10}  WARNING: histogram total ({histogram_total:,}) != "
-                f"packet count ({pkt_delta:,})"
+                f"{port['dev_port']:>10}  {'?':>6}  {unclassified:>13,}  {share:>6.2f}%"
+                "  <- length matches no size in config.py"
             )
+
+    if any(unclassified > 0 for _, _, _, unclassified in port_totals):
+        print()
+        print("Some packets did not match any configured frame size. The lengths")
+        print("the switch sees and the sizes in config.py disagree, most likely by")
+        print("a fixed number of bytes. Compare a single-size run against its")
+        print("`size` value and adjust the offset in start.py's classify_size step.")
 
 
 main()

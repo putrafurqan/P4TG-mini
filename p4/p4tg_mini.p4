@@ -120,9 +120,16 @@ struct my_egress_headers {
     ipv4_h ipv4;
 }
 
+// The 6 output ports, and how many frame-size buckets each one gets. 32
+// buckets leaves room for the 16 configured sizes the generator can hold,
+// with the top one reserved for lengths that match no configured size.
+const int PORT_COUNT = 6;
+const int BUCKETS_PER_PORT = 32;
+const bit<5> UNCLASSIFIED_BUCKET = 31;
+
 struct my_egress_metadata {
     bit<3> port_idx;    // compact 0-5 index for the 6 output ports
-    bit<4> bucket_idx;  // which configured frame size this packet matches
+    bit<5> bucket_idx;  // which configured frame size this packet matches
 }
 
 
@@ -134,6 +141,14 @@ parser MyEgressParser(
 ) {
     state start {
         packet.extract(eg_intr_md);
+
+        // Give these a definite value up front. The tables below overwrite
+        // both for every packet we generate, but a packet that somehow
+        // misses them must not index the statistics with whatever happened
+        // to be left in the registers.
+        metadata.port_idx = 0;
+        metadata.bucket_idx = UNCLASSIFIED_BUCKET;
+
         transition parse_ethernet;
     }
 
@@ -184,9 +199,11 @@ control MyEgress(
 
     // Classifies this copy's wire length against the actual configured
     // frame sizes (at most 16, per the generator's slot limit), so the
-    // per-port histogram below can be indexed by which stream a packet
-    // belongs to rather than by an arbitrary byte range.
-    action set_bucket(bit<4> bucket_idx) {
+    // statistics below can be indexed by which stream a packet belongs to
+    // rather than by an arbitrary byte range. A length that matches nothing
+    // lands in UNCLASSIFIED_BUCKET, kept separate from the real sizes so it
+    // cannot silently inflate one of them.
+    action set_bucket(bit<5> bucket_idx) {
         metadata.bucket_idx = bucket_idx;
     }
 
@@ -196,43 +213,33 @@ control MyEgress(
         }
         actions = {
             set_bucket;
-            NoAction;
         }
-        const default_action = NoAction();  // unmatched length -> bucket 0
+        const default_action = set_bucket(UNCLASSIFIED_BUCKET);
 
         size = 16;
     }
 
-    // Per-port packet/byte counters (throughput).
-    Register<bit<32>, bit<3>>(6) port_pkt_count;
-    Register<bit<64>, bit<3>>(6) port_byte_count;
-    // Per-port, per-size histogram, flattened: index = port_idx * 16 + bucket_idx.
-    Register<bit<32>, bit<7>>(96) size_histogram;
-
-    RegisterAction<bit<32>, bit<3>, bit<32>>(port_pkt_count) incr_port_pkt = {
-        void apply(inout bit<32> value) {
-            value = value + 1;
-        }
-    };
-    RegisterAction<bit<64>, bit<3>, bit<64>>(port_byte_count) add_port_bytes = {
-        void apply(inout bit<64> value) {
-            value = value + (bit<64>) eg_intr_md.pkt_length;
-        }
-    };
-    RegisterAction<bit<32>, bit<7>, bit<32>>(size_histogram) incr_size_bucket = {
-        void apply(inout bit<32> value) {
-            value = value + 1;
-        }
-    };
+    // Packets and bytes per (port, frame size), flattened:
+    // index = port_idx * BUCKETS_PER_PORT + bucket_idx.
+    //
+    // A Counter is used here rather than a Register because Tofino's stateful
+    // ALU -- what a Register compiles down to -- is 32 bits wide, so it cannot
+    // add a byte count into a 64-bit value at all, and a 32-bit byte total
+    // would wrap in well under a second at these rates. Counters are a separate
+    // hardware block that keeps a full 64-bit packet and byte pair and does the
+    // byte accounting itself. An indirect counter takes a computed index just
+    // like a Register does, so the (port x size) breakdown still works, and the
+    // per-port totals are just the sum across that port's buckets.
+    Counter<bit<64>, bit<8>>(
+        PORT_COUNT * BUCKETS_PER_PORT, CounterType_t.PACKETS_AND_BYTES
+    ) port_size_stats;
 
     apply {
         if (headers.ipv4.isValid()) {
             rewrite_per_port.apply();
             classify_size.apply();
 
-            incr_port_pkt.execute(metadata.port_idx);
-            add_port_bytes.execute(metadata.port_idx);
-            incr_size_bucket.execute(metadata.port_idx ++ metadata.bucket_idx);
+            port_size_stats.count(metadata.port_idx ++ metadata.bucket_idx);
         }
     }
 }

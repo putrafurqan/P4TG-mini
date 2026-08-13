@@ -37,14 +37,9 @@ def round_up(value, step):
     return value + step - remainder
 
 
-# Step 0: zero out the monitoring registers, so this run's stats don't
-# start out mixed in with whatever a previous run left behind.
-for register in (
-    bfrt.p4tg_mini.pipe.MyEgress.port_pkt_count,
-    bfrt.p4tg_mini.pipe.MyEgress.port_byte_count,
-    bfrt.p4tg_mini.pipe.MyEgress.size_histogram,
-):
-    register.clear()
+# Step 0: zero the monitoring counter, so this run's statistics don't start
+# out mixed in with whatever a previous run left behind.
+bfrt.p4tg_mini.pipe.MyEgress.port_size_stats.clear()
 
 
 # Step 1: work out which generator slot each frame size will use

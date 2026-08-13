@@ -87,8 +87,8 @@ $SDE/run_bfshell.sh -b ~/exp/P4TG-mini/monitor.py
 ```
 
 Edit `SECONDS` at the top of `monitor.py` to change how long it measures for.
-Registers are zeroed automatically at the start of every `start.py` run; set
-`RESET_ONLY = True` in `monitor.py` to zero them again mid-run without
+The counter is zeroed automatically at the start of every `start.py` run; set
+`RESET_ONLY = True` in `monitor.py` to zero it again mid-run without
 restarting traffic.
 
 ## Changing the packet
