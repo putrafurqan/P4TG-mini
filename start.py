@@ -103,14 +103,15 @@ for port in config.PORTS:
         new_ip=bytes_to_number(port["ip"]),
     )
 
-# Step 6: start the timer 
-bfrt.tf1.pktgen.app_cfg.mod_with_trigger_timer_periodic(
-    app_id=config.GENERATOR_NUMBER,
-    app_enable=True,
-    pkt_len=len(packet),
-    timer_nanosec=config.TIMER_NANOSECONDS,
-    packets_per_batch_cfg=config.PACKETS_PER_TIMER - 1,
-    batch_count_cfg=0,
-    pipe_local_source_port=config.GENERATOR_PORTS[0],
-    pkt_buffer_offset=config.MEMORY_POSITION,
-)
+# Step 6: start the timer, once per pipe's generator port
+for generator_port in config.GENERATOR_PORTS:
+    bfrt.tf1.pktgen.app_cfg.mod_with_trigger_timer_periodic(
+        app_id=config.GENERATOR_NUMBER,
+        app_enable=True,
+        pkt_len=len(packet),
+        timer_nanosec=config.TIMER_NANOSECONDS,
+        packets_per_batch_cfg=config.PACKETS_PER_TIMER - 1,
+        batch_count_cfg=0,
+        pipe_local_source_port=generator_port,
+        pkt_buffer_offset=config.MEMORY_POSITION,
+    )

@@ -3,6 +3,8 @@
 
 const PortId_t GENERATOR_PORT_PIPE_0 = 68;
 const PortId_t GENERATOR_PORT_PIPE_1 = 196;
+const PortId_t GENERATOR_PORT_PIPE_2 = 324;
+const PortId_t GENERATOR_PORT_PIPE_3 = 452;
 
 
 
@@ -26,6 +28,8 @@ parser MyIngressParser(
         transition select(ig_intr_md.ingress_port) {
             GENERATOR_PORT_PIPE_0: read_generator_header;
             GENERATOR_PORT_PIPE_1: read_generator_header;
+            GENERATOR_PORT_PIPE_2: read_generator_header;
+            GENERATOR_PORT_PIPE_3: read_generator_header;
             default: accept;
         }
     }

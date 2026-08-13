@@ -7,8 +7,10 @@ if this_folder not in sys.path:
 
 import config
 
-# Stop by `app_enable` = False
-bfrt.tf1.pktgen.app_cfg.mod_with_trigger_timer_periodic(
-    app_id=config.GENERATOR_NUMBER,
-    app_enable=False,
-)
+# Stop by `app_enable` = False, once per pipe's generator port
+for generator_port in config.GENERATOR_PORTS:
+    bfrt.tf1.pktgen.app_cfg.mod_with_trigger_timer_periodic(
+        app_id=config.GENERATOR_NUMBER,
+        app_enable=False,
+        pipe_local_source_port=generator_port,
+    )

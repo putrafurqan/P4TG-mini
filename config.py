@@ -1,8 +1,8 @@
 # Variable Configuration for P4TG-Mini
 
 # PORTS CONFIGURATION
-# PKTGEN PORT: 68, 168
-GENERATOR_PORTS = [68, 196]
+# PKTGEN PORT: 68 (pipe 0), 196 (pipe 1), 324 (pipe 2), 452 (pipe 3) - one per pipe
+GENERATOR_PORTS = [68, 196, 324, 452]
 # SET ALL 6 PORTS TO MULTICAST GROUP 1
 MULTICAST_GROUP = 1
 
