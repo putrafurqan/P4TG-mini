@@ -1,120 +1,86 @@
-import config
+import struct
 
 
 ETHERNET_HEADER_SIZE = 14
 IP_HEADER_SIZE = 20
 UDP_HEADER_SIZE = 8
-ERROR_CHECK_SIZE = 4
+FRAME_CHECK_SEQUENCE_SIZE = 4
 
 
-def calculate_checksum(header):
+def calculate_ip_checksum(header):
 
-    total = 0
-    position = 0
-    
-    while position < len(header):
-        first_byte = header[position]
-        second_byte = header[position + 1]
+    words = struct.unpack(f">{len(header) // 2}H", header)
+    total = sum(words)
 
-        pair = (first_byte * 256) + second_byte
+    while total > 0xFFFF:
+        total = (total & 0xFFFF) + (total >> 16)
 
-        total = total + pair
-        position = position + 2
-
-    while total > 65535:
-        extra = total // 65536
-        total = (total % 65536) + extra
-
-    checksum = 65535 - total
-
-    return checksum
+    return (~total) & 0xFFFF
 
 
-def make_packet():
+def build_ethernet_header(flow):
 
-    packet = []
+    destination_mac = bytes(flow["ethernet"]["destination_mac"])
+    source_mac = bytes(flow["ethernet"]["source_mac"])
+    ether_type = struct.pack(">H", 0x0800)  # IPv4
 
-    for number in config.DESTINATION_MAC:
-        packet.append(number)
+    return destination_mac + source_mac + ether_type
 
-    for number in config.SOURCE_MAC:
-        packet.append(number)
 
-    # Packet Type = 0x800 (IP Packet)
-    packet.append(0x08)
-    packet.append(0x00)
+def build_ip_header(flow, payload_size):
 
-    space_for_headers = ETHERNET_HEADER_SIZE + IP_HEADER_SIZE + UDP_HEADER_SIZE
-    data_size = config.FRAME_SIZE - ERROR_CHECK_SIZE - space_for_headers
+    total_length = IP_HEADER_SIZE + UDP_HEADER_SIZE + payload_size
+    source_ip = bytes(flow["ip"]["source_ip"])
+    destination_ip = bytes(flow["ip"]["destination_ip"])
 
-    ip_header = []
+    header = struct.pack(
+        ">BBHHHBBH4s4s",
+        0x45,           # version 4, header length 20 bytes
+        0,              # DSCP/ECN, unused
+        total_length,
+        0,              # identification
+        0,              # flags + fragment offset
+        64,             # TTL
+        17,             # protocol = UDP
+        0,              # checksum, filled in below
+        source_ip,
+        destination_ip,
+    )
 
-    # Version 4, header length 20 bytes.
-    ip_header.append(0x45)
+    checksum = calculate_ip_checksum(header)
 
-    # Priority, unused.
-    ip_header.append(0)
+    # Bytes 10-11 are the checksum field.
+    return header[:10] + struct.pack(">H", checksum) + header[12:]
 
-    # Length of the IP header, UDP header and data. A 16 bit value, so it is split across two bytes.
-    ip_length = IP_HEADER_SIZE + UDP_HEADER_SIZE + data_size
-    ip_header.append(ip_length // 256)
-    ip_header.append(ip_length % 256)
 
-    # Identification
-    ip_header.append(0)
-    ip_header.append(0)
+def build_udp_header(flow, payload_size):
 
-    # Fragmentation Settings
-    ip_header.append(0)
-    ip_header.append(0)
+    length = UDP_HEADER_SIZE + payload_size
 
-    # TTL = 64
-    ip_header.append(64)
+    return struct.pack(
+        ">HHHH",
+        flow["udp"]["source_port"],
+        flow["udp"]["destination_port"],
+        length,
+        0,  # checksum left at zero, a legal "no checksum" for IPv4/UDP
+    )
 
-    # L4 Protcol = UDP
-    ip_header.append(17)
 
-    # Checksum, filled in once the rest of the header is complete.
-    ip_header.append(0)
-    ip_header.append(0)
+def make_packet(flow):
 
-    for number in config.SOURCE_IP:
-        ip_header.append(number)
+    header_size = ETHERNET_HEADER_SIZE + IP_HEADER_SIZE + UDP_HEADER_SIZE
+    payload_size = flow["frame_size"] - FRAME_CHECK_SEQUENCE_SIZE - header_size
+    payload = bytes(payload_size)  # zero-padded
 
-    for number in config.DESTINATION_IP:
-        ip_header.append(number)
+    return (
+        build_ethernet_header(flow)
+        + build_ip_header(flow, payload_size)
+        + build_udp_header(flow, payload_size)
+        + payload
+    )
 
-    # Positions 10 and 11 are the two checksum bytes.
-    checksum = calculate_checksum(ip_header)
-    ip_header[10] = checksum // 256
-    ip_header[11] = checksum % 256
-
-    for number in ip_header:
-        packet.append(number)
-
-    # UDP HEADER
-
-    packet.append(config.SOURCE_PORT // 256)
-    packet.append(config.SOURCE_PORT % 256)
-
-    packet.append(config.DESTINATION_PORT // 256)
-    packet.append(config.DESTINATION_PORT % 256)
-
-    udp_length = UDP_HEADER_SIZE + data_size
-    packet.append(udp_length // 256)
-    packet.append(udp_length % 256)
-
-    # UDP CHECKSUM ZERO
-    packet.append(0)
-    packet.append(0)
-
-    # DATA
-    # Padded with zeros until the requested size is reached.
-
-    while len(packet) < config.FRAME_SIZE - ERROR_CHECK_SIZE:
-        packet.append(0)
-
-    return packet
 
 if __name__ == "__main__":
-    test_packet = make_packet()
+    import config
+
+    test_packet = make_packet(config.PROFILES["udp_multicast_1514B"]["flows"][0])
